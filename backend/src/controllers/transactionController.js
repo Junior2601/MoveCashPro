@@ -1,125 +1,175 @@
 const pool = require('../db');
 const { generateTrackingCode } = require('../utils/trackingCode');
-const agentGainModel = require('../models/agentGainModel');
-const agentBalanceModel = require('../models/agentBalanceModel');
+const transactionModel = require('../models/transactionModel');
 const transactionHistoryModel = require('../models/transactionHistoryModel');
-const redirectionModel = require('../models/redirectionModel');
+const agentGainModel = require('../models/agentGainModel');
 
-const COMMISSION_RATE = 0.0075; // 0.75%
+const COMMISSION_PERCENT = 0.75;
 
 exports.createTransaction = async (req, res) => {
   const {
-    sending_country_id,
-    sending_phone,
+    sender_country_id,
+    sender_phone,
     payment_method,
-    receiving_country_id,
-    receiving_phone,
-    amount_send
+    receiver_country_id,
+    receiver_phone,
+    reception_method,
+    amount_sent,
+    authorized_number_id = null // Optionnel avec valeur par défaut
   } = req.body;
+
+  if (!sender_country_id || !sender_phone || !payment_method || !receiver_country_id || !receiver_phone || !reception_method || !amount_sent) {
+    return res.status(400).json({ error: 'Tous les champs sont requis.' });
+  }
 
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
 
-    // 1. Générer code de suivi
-    let tracking_code = generateTrackingCode();
-
-    // Optionnel : vérifier unicité du code en DB (boucle tant que existe)...
-
-    // 2. Calcul du montant reçu et devise
-    // On récupère le taux et la devise de réception
-    const rateResult = await client.query(
-      `SELECT rate, receiving_currency_id FROM rates 
-       WHERE sending_country_id=$1 AND receiving_country_id=$2 ORDER BY created_at DESC LIMIT 1`,
-      [sending_country_id, receiving_country_id]
-    );
-    if (rateResult.rows.length === 0) {
-      throw new Error('Taux de change non trouvé.');
+    // Générer un code de suivi unique avec limite de tentatives
+    let tracking_code;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 10;
+    
+    while (attempts < MAX_ATTEMPTS) {
+      tracking_code = generateTrackingCode();
+      const check = await client.query(`SELECT 1 FROM transactions WHERE tracking_code = $1`, [tracking_code]);
+      if (check.rowCount === 0) break;
+      attempts++;
     }
-    const { rate, receiving_currency_id } = rateResult.rows[0];
-    const amount_received = amount_send * rate;
+    
+    if (attempts >= MAX_ATTEMPTS) {
+      throw new Error('Impossible de générer un code de suivi unique');
+    }
 
-    // 3. Choisir un agent disponible (premier agent avec fonds suffisants)
-    const agentResult = await client.query(
-      `SELECT a.agent_id FROM agents a 
-       JOIN agent_balances b ON a.agent_id = b.agent_id
-       WHERE b.balance >= $1 
-         AND b.currency_id = $2
+    // Récupérer taux et devise avec mapping country -> currency
+    const rateRes = await client.query(
+      `SELECT r.rate, sc.currency_id as sender_currency_id, rc.currency_id as receiver_currency_id
+       FROM rates r
+       JOIN countries sc ON sc.id = $1
+       JOIN countries rc ON rc.id = $2
+       WHERE r.sending_country_id = $1 AND r.receiving_country_id = $2 
+       ORDER BY r.created_at DESC LIMIT 1`,
+      [sender_country_id, receiver_country_id]
+    );
+    
+    if (rateRes.rowCount === 0) {
+      throw new Error('Taux de change non trouvé pour cette paire de pays.');
+    }
+
+    const { rate: exchange_rate, sender_currency_id, receiver_currency_id } = rateRes.rows[0];
+    const amount_received = Number(amount_sent) * exchange_rate;
+    const commission_percent = COMMISSION_PERCENT;
+    const agent_gain = Math.round(amount_received * (commission_percent / 100));
+    const company_margin = Math.round(amount_received * 0.05); // exemple 5%
+
+    // Sélection d'un agent avec la bonne currency_id
+    const agentRes = await client.query(
+      `SELECT a.id, a.name, b.balance 
+       FROM agents a 
+       JOIN agent_balances b ON a.id = b.agent_id
+       WHERE b.currency_id = $1 AND b.balance >= $2 AND a.status = 'active'
+       ORDER BY b.balance DESC 
        LIMIT 1`,
-      [amount_send, sending_country_id] // En supposant currency_id = sending_country_id ici
+      [sender_currency_id, amount_sent] // Utilise sender_currency_id au lieu de sender_country_id
     );
-    if (agentResult.rows.length === 0) {
-      throw new Error('Aucun agent avec fonds suffisants.');
+    
+    if (agentRes.rowCount === 0) {
+      throw new Error(`Aucun agent disponible avec suffisamment de fonds en devise ${sender_currency_id}.`);
     }
-    const agent_id = agentResult.rows[0].agent_id;
 
-    // 4. Insérer la transaction
-    const insertTxQuery = `
-      INSERT INTO transactions 
-      (sending_country_id, sending_phone, payment_method, receiving_country_id, receiving_phone, amount_send, amount_received, receiving_currency_id, status, agent_id, tracking_code, created_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10, NOW())
-      RETURNING transaction_id
-    `;
-    const txResult = await client.query(insertTxQuery, [
-      sending_country_id,
-      sending_phone,
+    const agent_id = agentRes.rows[0].id;
+
+    // Gestion conditionnelle d'authorized_number_id
+    let finalAuthorizedNumberId = authorized_number_id;
+    
+    // Si un numéro autorisé est fourni, vérifier qu'il existe et est valide
+    if (authorized_number_id) {
+      const authNumberRes = await client.query(
+        `SELECT id, status FROM authorized_numbers WHERE id = $1 AND agent_id = $2`,
+        [authorized_number_id, agent_id]
+      );
+      
+      if (authNumberRes.rowCount === 0) {
+        throw new Error('Numéro autorisé introuvable pour cet agent.');
+      }
+      
+      if (authNumberRes.rows[0].status !== 'active') {
+        throw new Error('Le numéro autorisé n\'est pas actif.');
+      }
+    } else {
+      // Si pas de numéro fourni, en assigner un automatiquement si nécessaire
+      // (selon la logique métier de votre application)
+      const autoAuthRes = await client.query(
+        `SELECT id FROM authorized_numbers 
+         WHERE agent_id = $1 AND status = 'active' AND auto_assign = true 
+         LIMIT 1`,
+        [agent_id]
+      );
+      
+      if (autoAuthRes.rowCount > 0) {
+        finalAuthorizedNumberId = autoAuthRes.rows[0].id;
+      }
+      // Sinon reste null si pas d'assignement automatique requis
+    }
+
+    // Insertion de la transaction avec authorized_number_id géré
+    const transaction_id = await transactionModel.insertTransaction({
+      client,
+      tracking_code,
+      sender_country_id,
+      receiver_country_id,
+      sender_phone,
+      receiver_phone,
       payment_method,
-      receiving_country_id,
-      receiving_phone,
-      amount_send,
+      reception_method,
+      amount_sent,
       amount_received,
-      receiving_currency_id,
+      exchange_rate,
+      commission_percent,
+      agent_gain,
+      company_margin,
       agent_id,
-      tracking_code
-    ]);
-    const transaction_id = txResult.rows[0].transaction_id;
+      authorized_number_id: finalAuthorizedNumberId // Peut être null ou un ID valide
+    });
 
-    // 5. Historique initial de la transaction
+    // Historique
     await transactionHistoryModel.logTransactionHistory({
       transactionId: transaction_id,
       previousStatus: null,
-      newStatus: 'pending',
+      newStatus: 'en_attente',
       changedBy: null,
       changedByType: null,
       client
     });
 
-    // 6. Calcul du gain agent (commission sur montant reçu)
-    const gain_amount = Math.round(amount_received * COMMISSION_RATE);
-
-    // 7. Enregistrer gain
+    // Gain agent avec la bonne currency_id
     await agentGainModel.insertAgentGain({
-      agentId: agent_id,
+      client,
       transactionId: transaction_id,
-      gainAmount: gain_amount,
-      currencyId: receiving_currency_id,
-      client
+      agentId: agent_id,
+      gainAmount: agent_gain,
+      currencyId: receiver_currency_id // Utilise receiver_currency_id pour le gain
     });
-
-    // 8. Mettre à jour la balance de l’agent (déduire le montant envoyé)
-    const updateBalanceQuery = `
-      UPDATE agent_balances
-      SET balance = balance - $1
-      WHERE agent_id = $2 AND currency_id = $3
-    `;
-    await client.query(updateBalanceQuery, [amount_send, agent_id, sending_country_id]);
 
     await client.query('COMMIT');
 
-    // 9. Retour réponse
-    res.json({
+    res.status(201).json({
       transaction_id,
       tracking_code,
-      agent_id,
       amount_received,
-      gain_amount,
-      status: 'pending'
+      exchange_rate,
+      agent_id,
+      authorized_number_id: finalAuthorizedNumberId,
+      sender_currency_id,
+      receiver_currency_id,
+      status: 'en_attente'
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
-    res.status(500).json({ error: err.message || 'Erreur serveur.' });
+    console.error('Erreur transaction:', err);
+    res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }

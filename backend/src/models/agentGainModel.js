@@ -7,8 +7,8 @@ const insertAgentGain = async ({
   currencyId,
 }) => {
   const result = await db.query(
-    `INSERT INTO agent_gains (agent_id, transaction_id, gain_amount, currency_id)
-     VALUES ($1, $2, $3, $4) RETURNING *`,
+    `INSERT INTO agent_gains (agent_id, transaction_id, gain_amount, currency_id,  created_at)
+     VALUES ($1, $2, $3, $4, NOW()) RETURNING *`,
     [agentId, transactionId, gainAmount, currencyId]
   );
   return result.rows[0];
