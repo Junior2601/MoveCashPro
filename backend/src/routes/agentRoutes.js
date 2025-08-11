@@ -1,20 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const agentController = require('../controllers/agentController');
+const adminAuthMiddleware = require('../middlewares/authMiddleware');
 
-// Créer un agent
-router.post('/', agentController.createAgent);
-
-// Récupérer un agent par email
-router.get('/by-email/:email', agentController.getAgentByEmail);
-
-// Récupérer les balances d’un agent
-router.get('/:agentId/balances', agentController.getAgentBalances);
-
-// Mettre à jour une balance
-router.put('/balance', agentController.updateAgentBalance);
-
-// Ajouter une nouvelle balance ou la mettre à jour
-router.post('/balance', agentController.insertAgentBalance);
+// Créer un nouvel agent (authentification admin requise)
+router.post('/', adminAuthMiddleware, agentController.createAgent);
+router.post('/login', agentController.loginAgent);
 
 module.exports = router;

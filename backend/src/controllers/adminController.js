@@ -1,45 +1,67 @@
-const adminModel = require('../models/adminModel');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { findAdminByEmail, createAdmin } = require('../models/adminModel');
+const generateToken = require('../utils/generateToken');
 
-// Créer un nouvel administrateur
-const createAdmin = async (req, res) => {
-  try {
-    const { name, email, passwordHash } = req.body;
+// @desc    Login admin
+// @route   POST /api/admin/login
+exports.loginAdmin = async (req, res) => {
+  const { email, password } = req.body;
 
-    if (!name || !email || !passwordHash) {
-      return res.status(400).json({ error: 'Tous les champs sont requis.' });
-    }
+  // try {
+    const admin = await findAdminByEmail(email); 
+    console.log("+++++++++++++++++++++++++++++++++++++++++")
+    console.log(admin);
 
-    const existingAdmin = await adminModel.getAdminByEmail(email);
-    if (existingAdmin) {
-      return res.status(409).json({ error: 'Un admin avec cet email existe déjà.' });
-    }
-
-    const newAdmin = await adminModel.createAdmin({ name, email, passwordHash });
-    res.status(201).json(newAdmin);
-  } catch (error) {
-    console.error('Erreur lors de la création de l’admin :', error);
-    res.status(500).json({ error: 'Erreur serveur' });
-  }
-};
-
-// Obtenir un admin par email
-const getAdminByEmail = async (req, res) => {
-  try {
-    const { email } = req.params;
-
-    const admin = await adminModel.getAdminByEmail(email);
     if (!admin) {
-      return res.status(404).json({ error: 'Admin non trouvé' });
+      return res.status(404).json({ message: 'Admin non trouvé' });
     }
 
-    res.status(200).json(admin);
-  } catch (error) {
-    console.error('Erreur lors de la récupération de l’admin :', error);
-    res.status(500).json({ error: 'Erreur serveur' });
+    const isMatch = await bcrypt.compare(password, admin.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Mot de passe invalide' });
+    }
+
+    const token = generateToken(admin.id);
+    res.status(200).json({
+      id: admin.id,
+      email: admin.email,
+      name: admin.name,
+      token,
+    });
+  // } catch (err) {
+  //   console.error(err);
+  //   res.status(500).json({ message: 'Erreur serveur' });
+  // }
+};
+
+// @desc    Inscription admin (manuel)
+// @route   POST /api/admin/register
+exports.registerAdmin = async (req, res) => {
+  const { email, password, name } = req.body;
+
+  try {
+    const existing = await findAdminByEmail(email);
+    if (existing) {
+      return res.status(400).json({ message: 'Email déjà utilisé' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newAdmin = await createAdmin({ email, password: hashedPassword, name });
+
+    const token = generateToken(newAdmin.id);
+    res.status(201).json({
+      id: newAdmin.id,
+      email: newAdmin.email,
+      name: newAdmin.name,
+      token,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Erreur serveur' });
   }
 };
 
-module.exports = {
-  createAdmin,
-  getAdminByEmail,
+exports.test = async( req, res) => {
+ res.send('test');
 };

@@ -1,11 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const adminController = require('../controllers/adminController');
+const { loginAdmin, registerAdmin, test } = require('../controllers/adminController');
 
-// Créer un admin
-router.post('/', adminController.createAdmin);
-
-// Obtenir un admin par email
-router.get('/:email', adminController.getAdminByEmail);
+router.post('/login', loginAdmin);
+router.post('/register', registerAdmin); // Optionnel
+router.get('/test', test);
 
 module.exports = router;

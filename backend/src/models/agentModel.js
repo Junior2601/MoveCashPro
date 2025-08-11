@@ -1,17 +1,18 @@
 const db = require('../config/db');
+const bcrypt = require('bcrypt');
 
-// créer un nouvel agent
-const createAgent = async ({ name, email, passwordHash, phone, countryId }) => {
+const createAgent = async ({ email, password, name, country_id }) => {
+  const hashedPassword = await bcrypt.hash(password, 10);
   const result = await db.query(
-    `INSERT INTO agents (name, email, password_hash, phone, country_id) 
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [name, email, passwordHash, phone, countryId]
+    `INSERT INTO agents (email, password, name, country_id)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, email, name, country_id, created_at`,
+    [email, hashedPassword, name, country_id]
   );
   return result.rows[0];
 };
 
-// obtenir un agent par email
-const getAgentByEmail = async (email) => {
+const findAgentByEmail = async (email) => {
   const result = await db.query(
     `SELECT * FROM agents WHERE email = $1`,
     [email]
@@ -19,46 +20,37 @@ const getAgentByEmail = async (email) => {
   return result.rows[0];
 };
 
-// voir le portefeuille d'un agent
-const getAgentBalances = async (agentId) => {
-  const result = await db.query(
-    `SELECT ab.*, c.code as currency_code
-     FROM agent_balances ab
-     JOIN currencies c ON ab.currency_id = c.id
-     WHERE agent_id = $1`,
-    [agentId]
-  );
-  return result.rows;
-};
+const updateAgent = async (id, { email, password, name, country_id }) => {
+  let hashedPassword = null;
 
-// mettre à jour la balance d'un agent
-const updateAgentBalance = async ({ agentId, currencyId, newBalance }) => {
+  if (password) {
+    hashedPassword = await bcrypt.hash(password, 10);
+  }
+
   const result = await db.query(
-    `UPDATE agent_balances SET balance = $1, updated_at = NOW()
-     WHERE agent_id = $2 AND currency_id = $3
-     RETURNING *`,
-    [newBalance, agentId, currencyId]
+    `UPDATE agents
+     SET email = $1,
+         ${password ? 'password = $2,' : ''}
+         name = $3,
+         country_id = $4
+     WHERE id = $5
+     RETURNING id, email, name, country_id, updated_at`,
+    password
+      ? [email, hashedPassword, name, country_id, id]
+      : [email, name, country_id, id]
   );
+
   return result.rows[0];
 };
 
-// ajouter à la balance d'un agent
-const insertAgentBalance = async ({ agentId, currencyId, balance }) => {
-  const result = await db.query(
-    `INSERT INTO agent_balances (agent_id, currency_id, balance)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (agent_id, currency_id)
-     DO UPDATE SET balance = EXCLUDED.balance, updated_at = NOW()
-     RETURNING *`,
-    [agentId, currencyId, balance]
-  );
-  return result.rows[0];
+const deleteAgent = async (id) => {
+  await db.query(`DELETE FROM agents WHERE id = $1`, [id]);
+  return { message: 'Agent supprimé avec succès.' };
 };
 
 module.exports = {
   createAgent,
-  getAgentByEmail,
-  getAgentBalances,
-  updateAgentBalance,
-  insertAgentBalance,
+  findAgentByEmail,
+  updateAgent,
+  deleteAgent,
 };

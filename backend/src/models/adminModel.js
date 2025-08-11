@@ -1,24 +1,21 @@
-const db = require('../config/db');
+const pool = require('../config/db');
 
-// créer un admin
-const createAdmin = async ({ name, email, passwordHash }) => {
-  const result = await db.query(
-    `INSERT INTO admins (name, email, password_hash) VALUES ($1, $2, $3) RETURNING *`,
-    [name, email, passwordHash]
-  );
-  return result.rows[0];
+const findAdminByEmail = async (email) => {
+  const res = await pool.query('SELECT * FROM admins WHERE email = $1 LIMIT 1', [email]);
+  return res.rows[0];
 };
 
-// obtenir un admin
-const getAdminByEmail = async (email) => {
-  const result = await db.query(
-    `SELECT * FROM admins WHERE email = $1`,
-    [email]
+const createAdmin = async ({ email, password, name }) => {
+  const res = await pool.query(
+    `INSERT INTO admins (email, password, name) 
+     VALUES ($1, $2, $3) 
+     RETURNING id, email, name, created_at`,
+    [email, password, name]
   );
-  return result.rows[0];
+  return res.rows[0];
 };
 
 module.exports = {
+  findAdminByEmail,
   createAdmin,
-  getAdminByEmail,
 };
